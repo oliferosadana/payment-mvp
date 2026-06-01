@@ -151,6 +151,41 @@ def list_devices(ctx, limit):
     return psql_json(f"SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (SELECT * FROM devices WHERE {where} ORDER BY id DESC LIMIT {limit}) t;") or []
 
 
+def manual_match_event(ctx, payload):
+    require_type(ctx, {"admin", "merchant"})
+    event_id = payload.get("event_id")
+    invoice_id = payload.get("invoice_id")
+    if not isinstance(event_id, int) or not isinstance(invoice_id, int):
+        raise ValueError("event_id and invoice_id are required integers")
+    scope = "TRUE" if ctx["token_type"] == "admin" else f"merchant_id={ctx['merchant_id']}"
+    event = psql_json(f"SELECT row_to_json(t) FROM (SELECT * FROM payment_events WHERE id={event_id} AND {scope} LIMIT 1) t;")
+    invoice = psql_json(f"SELECT row_to_json(t) FROM (SELECT * FROM invoices WHERE id={invoice_id} AND {scope} AND status='pending' LIMIT 1) t;")
+    if not event or not invoice:
+        raise ValueError("event or pending invoice not found in scope")
+    psql_json(f"UPDATE invoices SET status='paid', paid_at=now(), updated_at=now() WHERE id={invoice_id} RETURNING row_to_json(invoices.*);")
+    updated = psql_json(f"UPDATE payment_events SET status='matched', invoice_id={invoice_id}, match_reason='manual_review_match' WHERE id={event_id} RETURNING row_to_json(payment_events.*);")
+    updated["callback"] = send_callback(updated["merchant_id"], invoice_id, updated)
+    return updated
+
+
+def list_callback_attempts(ctx, limit):
+    require_type(ctx, {"admin", "merchant"})
+    where = "TRUE" if ctx["token_type"] == "admin" else f"merchant_id={ctx['merchant_id']}"
+    return psql_json(f"SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (SELECT * FROM callback_attempts WHERE {where} ORDER BY id DESC LIMIT {limit}) t;") or []
+
+
+def retry_callback(ctx, payload):
+    require_type(ctx, {"admin", "merchant"})
+    attempt_id = payload.get("attempt_id")
+    if not isinstance(attempt_id, int):
+        raise ValueError("attempt_id is required integer")
+    scope = "TRUE" if ctx["token_type"] == "admin" else f"merchant_id={ctx['merchant_id']}"
+    attempt = psql_json(f"SELECT row_to_json(t) FROM (SELECT * FROM callback_attempts WHERE id={attempt_id} AND {scope} LIMIT 1) t;")
+    if not attempt:
+        raise ValueError("callback attempt not found")
+    return send_callback(attempt["merchant_id"], attempt["invoice_id"], {"id": attempt["payment_event_id"]})
+
+
 def list_events(ctx, limit):
     where = "TRUE" if ctx["token_type"] == "admin" else f"merchant_id={ctx['merchant_id']}"
     return psql_json(f"SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (SELECT * FROM payment_events WHERE {where} ORDER BY id DESC LIMIT {limit}) t;") or []
@@ -209,15 +244,24 @@ def send_callback(merchant_id, invoice_id, event):
     invoice = invoice_by_id(invoice_id)
     payload = {"event": "invoice.paid", "merchant_id": merchant_id, "invoice": invoice, "payment_event": event}
     data = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+    status, http_status, error = "pending", None, None
     req = urllib.request.Request(merchant["callback_url"], data=data, method="POST")
     req.add_header("Content-Type", "application/json")
     if merchant.get("callback_secret"):
         req.add_header("X-Callback-Secret", merchant["callback_secret"])
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return {"sent": True, "status": resp.status}
+            http_status = resp.status
+            status = "success" if 200 <= resp.status <= 299 else "failed"
     except Exception as exc:
-        return {"sent": False, "reason": exc.__class__.__name__}
+        status = "failed"
+        error = exc.__class__.__name__
+    attempt = psql_json(f"""
+        INSERT INTO callback_attempts (merchant_id, invoice_id, payment_event_id, callback_url, payload, status, http_status, error)
+        VALUES ({merchant_id}, {invoice_id if invoice_id else 'NULL'}, {sql_literal(event.get('id'))}, {sql_literal(merchant['callback_url'])}, {sql_json(payload)}, {sql_literal(status)}, {http_status if http_status else 'NULL'}, {sql_literal(error)})
+        RETURNING row_to_json(callback_attempts.*);
+    """)
+    return {"sent": status == "success", "status": http_status, "error": error, "attempt_id": attempt["id"]}
 
 
 def store_event(ctx, payload, client_ip):
@@ -243,8 +287,8 @@ def store_event(ctx, payload, client_ip):
 
 
 def dashboard_html(ctx):
-    merchant_filter = "" if ctx["token_type"] == "admin" else f"&merchant={ctx['merchant_id']}"
-    return f"""<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>Payment SaaS</title><style>body{{font-family:Arial,sans-serif;background:#f4f7fb;margin:0;padding:24px;color:#111827}}.card{{background:white;border-radius:18px;padding:20px;margin:0 auto 18px;max-width:980px;box-shadow:0 10px 30px #d7dee8}}h1{{margin:0 0 8px}}code{{background:#eef2ff;padding:2px 6px;border-radius:6px}}table{{width:100%;border-collapse:collapse}}td,th{{border-bottom:1px solid #e5e7eb;padding:8px;text-align:left}}.paid{{color:#15803d}}.pending{{color:#b45309}}</style></head><body><div class='card'><h1>Payment SaaS Dashboard</h1><p>Gunakan API untuk data live. Endpoint cepat: <code>/api/stats</code>, <code>/api/invoices</code>, <code>/api/payment-events</code>, <code>/api/devices</code>.</p><p>Role token aktif: <code>{ctx['token_type']}</code>{merchant_filter}</p></div></body></html>"""
+    return """<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>Payment SaaS</title><style>body{font-family:Arial,sans-serif;background:#f4f7fb;margin:0;padding:24px;color:#111827}.card{background:white;border-radius:18px;padding:20px;margin:0 auto 18px;max-width:1100px;box-shadow:0 10px 30px #d7dee8}input,button{padding:10px;border-radius:10px;border:1px solid #d7dee8}button{background:#2563eb;color:white;cursor:pointer}table{width:100%;border-collapse:collapse;font-size:14px}td,th{border-bottom:1px solid #e5e7eb;padding:8px;text-align:left}.paid,.matched,.success{color:#15803d}.pending,.needs_review{color:#b45309}.failed,.unmatched{color:#b91c1c}</style></head><body><div class='card'><h1>Payment SaaS Dashboard</h1><p>Masukkan token merchant/admin untuk memuat data.</p><input id='token' placeholder='Bearer token' style='width:70%'> <button onclick='saveToken()'>Load</button></div><div class='card'><h2>Stats</h2><pre id='stats'>-</pre></div><div class='card'><h2>Invoices</h2><div id='invoices'></div></div><div class='card'><h2>Payment Events</h2><div id='events'></div></div><div class='card'><h2>Devices</h2><div id='devices'></div></div><div class='card'><h2>Callbacks</h2><div id='callbacks'></div></div><script>
+let token=localStorage.getItem('pm_token')||'';document.getElementById('token').value=token;function h(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'}}function saveToken(){token=document.getElementById('token').value;localStorage.setItem('pm_token',token);load()}async function api(p,o={}){let r=await fetch(p,{...o,headers:h()});return await r.json()}function table(rows){if(!rows||!rows.length)return '<p>No data</p>';let cols=Object.keys(rows[0]);return '<table><tr>'+cols.map(c=>'<th>'+c+'</th>').join('')+'</tr>'+rows.map(r=>'<tr>'+cols.map(c=>'<td class="'+r[c]+'">'+JSON.stringify(r[c]).slice(0,120)+'</td>').join('')+'</tr>').join('')+'</table>'}async function manual(eventId){let invoiceId=prompt('Invoice ID untuk match manual?');if(!invoiceId)return;alert(JSON.stringify(await api('/api/payment-events/manual-match',{method:'POST',body:JSON.stringify({event_id:+eventId,invoice_id:+invoiceId})})) ;load()}async function retry(id){alert(JSON.stringify(await api('/api/callback-attempts/retry',{method:'POST',body:JSON.stringify({attempt_id:+id})})));load()}async function load(){try{document.getElementById('stats').textContent=JSON.stringify(await api('/api/stats'),null,2);let inv=await api('/api/invoices?limit=20');document.getElementById('invoices').innerHTML=table(inv);let ev=await api('/api/payment-events?limit=20');document.getElementById('events').innerHTML=table(ev.map(e=>({...e,action:e.status==='needs_review'?'<button onclick="manual('+e.id+')">match</button>':''})));let dev=await api('/api/devices?limit=20');document.getElementById('devices').innerHTML=table(dev);let cb=await api('/api/callback-attempts?limit=20');document.getElementById('callbacks').innerHTML=table(cb.map(c=>({...c,action:c.status==='failed'?'<button onclick="retry('+c.id+')">retry</button>':''})));}catch(e){alert(e)}}if(token)load();</script></body></html>"""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -276,6 +320,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, list_events(ctx, self.limit(parsed.query)))
         elif parsed.path == "/api/devices":
             self.send_json(200, list_devices(ctx, self.limit(parsed.query)))
+        elif parsed.path == "/api/callback-attempts":
+            self.send_json(200, list_callback_attempts(ctx, self.limit(parsed.query)))
         elif parsed.path == "/api/merchants":
             require_type(ctx, {"admin"})
             self.send_json(200, list_merchants())
@@ -290,6 +336,10 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/merchants":
             require_type(ctx, {"admin"})
             self.send_json(201, {"ok": True, **create_merchant(self.read_json())})
+        elif parsed.path == "/api/payment-events/manual-match":
+            self.send_json(200, {"ok": True, "event": manual_match_event(ctx, self.read_json())})
+        elif parsed.path == "/api/callback-attempts/retry":
+            self.send_json(200, {"ok": True, "callback": retry_callback(ctx, self.read_json())})
         else:
             self.send_json(404, {"ok": False, "error": "not_found"})
 

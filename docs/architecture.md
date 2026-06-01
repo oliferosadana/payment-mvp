@@ -99,3 +99,11 @@ Token usage:
 - Device token: dipakai Android listener untuk `POST /webhook`.
 
 Matching v0.2 mencari invoice `pending` dengan merchant yang sama dan amount yang sama. Jika ada lebih dari satu kandidat, event menjadi `needs_review`.
+
+## SaaS v0.4
+
+- Dashboard merchant interaktif berbasis token browser.
+- Manual match untuk event `needs_review`.
+- Callback attempts disimpan di tabel `callback_attempts`.
+- Callback retry endpoint tersedia.
+- Reverse proxy config disiapkan untuk Nginx + Certbot.

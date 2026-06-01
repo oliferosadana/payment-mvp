@@ -220,3 +220,30 @@ Jika `callback_secret` diisi, backend mengirim header:
 ```http
 X-Callback-Secret: <callback_secret>
 ```
+
+## SaaS Endpoints v0.4
+
+### POST /api/payment-events/manual-match
+
+Manual match event `needs_review` ke invoice pending.
+
+```json
+{
+  "event_id": 4,
+  "invoice_id": 5
+}
+```
+
+### GET /api/callback-attempts
+
+List callback delivery attempts.
+
+### POST /api/callback-attempts/retry
+
+Retry callback attempt yang gagal.
+
+```json
+{
+  "attempt_id": 1
+}
+```

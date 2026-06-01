@@ -81,3 +81,21 @@ Setelah ubah config atau source:
 ```bash
 systemctl restart notifier-webhook
 ```
+
+## Reverse Proxy / HTTPS
+
+Contoh konfigurasi Nginx tersedia di:
+
+```text
+deploy/nginx/payment-saas.conf
+```
+
+Untuk production, arahkan DNS ke server lalu gunakan Certbot:
+
+```bash
+apt install nginx certbot python3-certbot-nginx
+cp deploy/nginx/payment-saas.conf /etc/nginx/sites-available/payment-saas.conf
+ln -s /etc/nginx/sites-available/payment-saas.conf /etc/nginx/sites-enabled/
+nginx -t && systemctl reload nginx
+certbot --nginx -d payment.example.com
+```
