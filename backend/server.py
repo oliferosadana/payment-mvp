@@ -4,6 +4,9 @@ import os
 import re
 import secrets
 import subprocess
+import threading
+import time
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -12,6 +15,7 @@ HOST = os.environ.get("WEBHOOK_HOST", "0.0.0.0")
 PORT = int(os.environ.get("WEBHOOK_PORT", "8099"))
 ADMIN_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
 DB_NAME = os.environ.get("PAYMENT_DB", "payment_mvp")
+SESSIONS = {}
 
 
 def sql_literal(value):
@@ -63,6 +67,21 @@ def auth_context(header):
         return row
     return None
 
+
+def session_context(cookie_header):
+    for item in cookie_header.split(';'):
+        name, _, value = item.strip().partition('=')
+        if name == 'pm_session' and value in SESSIONS:
+            return SESSIONS[value]
+    return None
+
+def create_session(ctx):
+    sid = secrets.token_urlsafe(32)
+    SESSIONS[sid] = ctx
+    return sid
+
+def login_page(error=''):
+    return f"""<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>Login Payment SaaS</title><style>body{{font-family:Arial,sans-serif;background:#eef4ff;display:grid;place-items:center;min-height:100vh}}.box{{background:white;padding:28px;border-radius:20px;box-shadow:0 20px 50px #ccd6e6;max-width:420px;width:90%}}input,button{{width:100%;padding:12px;margin-top:10px;border-radius:12px;border:1px solid #d1d5db}}button{{background:#2563eb;color:white;border:0}}</style></head><body><form class='box' method='post' action='/dashboard/login'><h1>Payment SaaS</h1><p>Login memakai admin token atau merchant token.</p><p style='color:#b91c1c'>{error}</p><input name='token' type='password' placeholder='Token'><button>Login</button></form></body></html>"""
 
 def require_type(ctx, allowed):
     if not ctx or ctx.get("token_type") not in allowed:
@@ -186,6 +205,26 @@ def retry_callback(ctx, payload):
     return send_callback(attempt["merchant_id"], attempt["invoice_id"], {"id": attempt["payment_event_id"]})
 
 
+def update_merchant_callback(ctx, payload):
+    require_type(ctx, {"admin", "merchant"})
+    merchant_id = payload.get("merchant_id") if ctx["token_type"] == "admin" else ctx["merchant_id"]
+    callback_url = payload.get("callback_url")
+    callback_secret = payload.get("callback_secret")
+    return psql_json(f"UPDATE merchants SET callback_url={sql_literal(callback_url)}, callback_secret={sql_literal(callback_secret)}, updated_at=now() WHERE id={merchant_id} RETURNING row_to_json(merchants.*);")
+
+def retry_failed_callbacks_once(limit=10):
+    rows = psql_json(f"SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (SELECT * FROM callback_attempts WHERE status='failed' ORDER BY id ASC LIMIT {limit}) t;") or []
+    for row in rows:
+        send_callback(row["merchant_id"], row["invoice_id"], {"id": row["payment_event_id"]})
+
+def retry_worker():
+    while True:
+        try:
+            retry_failed_callbacks_once()
+        except Exception as exc:
+            print(f"callback retry worker error: {exc}", flush=True)
+        time.sleep(60)
+
 def list_events(ctx, limit):
     where = "TRUE" if ctx["token_type"] == "admin" else f"merchant_id={ctx['merchant_id']}"
     return psql_json(f"SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (SELECT * FROM payment_events WHERE {where} ORDER BY id DESC LIMIT {limit}) t;") or []
@@ -287,8 +326,9 @@ def store_event(ctx, payload, client_ip):
 
 
 def dashboard_html(ctx):
-    return """<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>Payment SaaS</title><style>body{font-family:Arial,sans-serif;background:#f4f7fb;margin:0;padding:24px;color:#111827}.card{background:white;border-radius:18px;padding:20px;margin:0 auto 18px;max-width:1100px;box-shadow:0 10px 30px #d7dee8}input,button{padding:10px;border-radius:10px;border:1px solid #d7dee8}button{background:#2563eb;color:white;cursor:pointer}table{width:100%;border-collapse:collapse;font-size:14px}td,th{border-bottom:1px solid #e5e7eb;padding:8px;text-align:left}.paid,.matched,.success{color:#15803d}.pending,.needs_review{color:#b45309}.failed,.unmatched{color:#b91c1c}</style></head><body><div class='card'><h1>Payment SaaS Dashboard</h1><p>Masukkan token merchant/admin untuk memuat data.</p><input id='token' placeholder='Bearer token' style='width:70%'> <button onclick='saveToken()'>Load</button></div><div class='card'><h2>Stats</h2><pre id='stats'>-</pre></div><div class='card'><h2>Invoices</h2><div id='invoices'></div></div><div class='card'><h2>Payment Events</h2><div id='events'></div></div><div class='card'><h2>Devices</h2><div id='devices'></div></div><div class='card'><h2>Callbacks</h2><div id='callbacks'></div></div><script>
-let token=localStorage.getItem('pm_token')||'';document.getElementById('token').value=token;function h(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'}}function saveToken(){token=document.getElementById('token').value;localStorage.setItem('pm_token',token);load()}async function api(p,o={}){let r=await fetch(p,{...o,headers:h()});return await r.json()}function table(rows){if(!rows||!rows.length)return '<p>No data</p>';let cols=Object.keys(rows[0]);return '<table><tr>'+cols.map(c=>'<th>'+c+'</th>').join('')+'</tr>'+rows.map(r=>'<tr>'+cols.map(c=>'<td class="'+r[c]+'">'+JSON.stringify(r[c]).slice(0,120)+'</td>').join('')+'</tr>').join('')+'</table>'}async function manual(eventId){let invoiceId=prompt('Invoice ID untuk match manual?');if(!invoiceId)return;alert(JSON.stringify(await api('/api/payment-events/manual-match',{method:'POST',body:JSON.stringify({event_id:+eventId,invoice_id:+invoiceId})})) ;load()}async function retry(id){alert(JSON.stringify(await api('/api/callback-attempts/retry',{method:'POST',body:JSON.stringify({attempt_id:+id})})));load()}async function load(){try{document.getElementById('stats').textContent=JSON.stringify(await api('/api/stats'),null,2);let inv=await api('/api/invoices?limit=20');document.getElementById('invoices').innerHTML=table(inv);let ev=await api('/api/payment-events?limit=20');document.getElementById('events').innerHTML=table(ev.map(e=>({...e,action:e.status==='needs_review'?'<button onclick="manual('+e.id+')">match</button>':''})));let dev=await api('/api/devices?limit=20');document.getElementById('devices').innerHTML=table(dev);let cb=await api('/api/callback-attempts?limit=20');document.getElementById('callbacks').innerHTML=table(cb.map(c=>({...c,action:c.status==='failed'?'<button onclick="retry('+c.id+')">retry</button>':''})));}catch(e){alert(e)}}if(token)load();</script></body></html>"""
+    admin_tools = "" if ctx["token_type"] != "admin" else "<div class='card'><h2>Create Merchant</h2><input id='mname' placeholder='Merchant name'> <input id='mslug' placeholder='slug'> <button onclick='createMerchant()'>Create Merchant</button><pre id='merchantResult'></pre><div id='merchants'></div></div>"
+    return f"""<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>Payment SaaS</title><style>body{{font-family:Arial,sans-serif;background:#f4f7fb;margin:0;padding:24px;color:#111827}}.card{{background:white;border-radius:18px;padding:20px;margin:0 auto 18px;max-width:1120px;box-shadow:0 10px 30px #d7dee8}}input,button{{padding:10px;border-radius:10px;border:1px solid #d7dee8;margin:4px}}button{{background:#2563eb;color:white;cursor:pointer}}table{{width:100%;border-collapse:collapse;font-size:14px}}td,th{{border-bottom:1px solid #e5e7eb;padding:8px;text-align:left}}.paid,.matched,.success{{color:#15803d}}.pending,.needs_review{{color:#b45309}}.failed,.unmatched{{color:#b91c1c}}</style></head><body><div class='card'><h1>Payment SaaS Dashboard</h1><p>Role: <b>{ctx['token_type']}</b> Merchant: <b>{ctx.get('merchant_id')}</b></p><button onclick='logout()'>Logout</button></div><div class='card'><h2>Create Invoice</h2><input id='external_id' placeholder='External ID'> <input id='amount' type='number' placeholder='Amount'> <input id='customer_name' placeholder='Customer name'> <button onclick='createInvoice()'>Create Invoice</button><pre id='invoiceResult'></pre></div><div class='card'><h2>Callback Setting</h2><input id='callback_url' placeholder='Callback URL'> <input id='callback_secret' placeholder='Callback secret'> <button onclick='saveCallback()'>Save Callback</button><pre id='callbackResult'></pre></div>{admin_tools}<div class='card'><h2>Stats</h2><pre id='stats'>-</pre></div><div class='card'><h2>Invoices</h2><div id='invoices'></div></div><div class='card'><h2>Payment Events</h2><div id='events'></div></div><div class='card'><h2>Devices</h2><div id='devices'></div></div><div class='card'><h2>Callbacks</h2><div id='callbacks'></div></div><script>
+function h(){{return {{'Content-Type':'application/json'}}}}async function api(p,o={{}}){{let r=await fetch(p,{{...o,headers:h()}});if(r.status===401) location='/dashboard/login';return await r.json()}}function table(rows){{if(!rows||!rows.length)return '<p>No data</p>';let cols=Object.keys(rows[0]);return '<table><tr>'+cols.map(c=>'<th>'+c+'</th>').join('')+'</tr>'+rows.map(r=>'<tr>'+cols.map(c=>'<td class="'+r[c]+'">'+String(JSON.stringify(r[c])).slice(0,120)+'</td>').join('')+'</tr>').join('')+'</table>'}}async function createInvoice(){{let body={{external_id:external_id.value,amount:+amount.value,customer_name:customer_name.value}};invoiceResult.textContent=JSON.stringify(await api('/api/invoices',{{method:'POST',body:JSON.stringify(body)}}),null,2);load()}}async function createMerchant(){{let body={{name:mname.value,slug:mslug.value}};merchantResult.textContent=JSON.stringify(await api('/api/merchants',{{method:'POST',body:JSON.stringify(body)}}),null,2);load()}}async function saveCallback(){{callbackResult.textContent=JSON.stringify(await api('/api/merchants/callback',{{method:'POST',body:JSON.stringify({{callback_url:callback_url.value,callback_secret:callback_secret.value}})}}),null,2)}}async function manual(eventId){{let invoiceId=prompt('Invoice ID untuk match manual?');if(!invoiceId)return;alert(JSON.stringify(await api('/api/payment-events/manual-match',{{method:'POST',body:JSON.stringify({{event_id:+eventId,invoice_id:+invoiceId}})}})));load()}}async function retry(id){{alert(JSON.stringify(await api('/api/callback-attempts/retry',{{method:'POST',body:JSON.stringify({{attempt_id:+id}})}})));load()}}async function logout(){{await fetch('/dashboard/logout',{{method:'POST'}});location='/dashboard/login'}}async function load(){{document.getElementById('stats').textContent=JSON.stringify(await api('/api/stats'),null,2);let inv=await api('/api/invoices?limit=20');invoices.innerHTML=table(inv);let ev=await api('/api/payment-events?limit=20');events.innerHTML=table(ev.map(e=>({{...e,action:e.status==='needs_review'?'<button onclick="manual('+e.id+')">match</button>':''}})));devices.innerHTML=table(await api('/api/devices?limit=20'));callbacks.innerHTML=table((await api('/api/callback-attempts?limit=20')).map(c=>({{...c,action:c.status==='failed'?'<button onclick="retry('+c.id+')">retry</button>':''}})));try{{merchants.innerHTML=table(await api('/api/merchants'))}}catch(e){{}}}}load();</script></body></html>"""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -297,12 +337,36 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/health":
-            self.send_json(200, {"ok": True, "service": "payment-saas", "version": "0.2"})
+            self.send_json(200, {"ok": True, "service": "payment-saas", "version": "0.3"})
+            return
+        if parsed.path == "/dashboard/login":
+            self.send_html(200, login_page())
+            return
+        if parsed.path == "/dashboard" and not session_context(self.headers.get("Cookie", "")):
+            self.redirect("/dashboard/login")
             return
         self.with_auth(lambda ctx: self.route_get(ctx, parsed))
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/dashboard/login":
+            data = urllib.parse.parse_qs(self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8"))
+            ctx = auth_context("Bearer " + data.get("token", [""])[0])
+            if not ctx or ctx.get("token_type") not in {"admin", "merchant"}:
+                self.send_html(401, login_page("Token tidak valid"))
+                return
+            sid = create_session(ctx)
+            self.send_response(302)
+            self.send_header("Set-Cookie", f"pm_session={sid}; HttpOnly; SameSite=Lax; Path=/")
+            self.send_header("Location", "/dashboard")
+            self.end_headers()
+            return
+        if parsed.path == "/dashboard/logout":
+            self.send_response(302)
+            self.send_header("Set-Cookie", "pm_session=; Max-Age=0; Path=/")
+            self.send_header("Location", "/dashboard/login")
+            self.end_headers()
+            return
         self.with_auth(lambda ctx: self.route_post(ctx, parsed))
 
     def route_get(self, ctx, parsed):
@@ -340,12 +404,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"ok": True, "event": manual_match_event(ctx, self.read_json())})
         elif parsed.path == "/api/callback-attempts/retry":
             self.send_json(200, {"ok": True, "callback": retry_callback(ctx, self.read_json())})
+        elif parsed.path == "/api/merchants/callback":
+            self.send_json(200, {"ok": True, "merchant": update_merchant_callback(ctx, self.read_json())})
         else:
             self.send_json(404, {"ok": False, "error": "not_found"})
 
     def with_auth(self, callback):
         try:
-            ctx = auth_context(self.headers.get("Authorization", ""))
+            ctx = auth_context(self.headers.get("Authorization", "")) or session_context(self.headers.get("Cookie", ""))
             if not ctx:
                 self.send_json(401, {"ok": False, "error": "unauthorized"})
                 return
@@ -369,6 +435,11 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f"{self.address_string()} - {fmt % args}", flush=True)
 
+    def redirect(self, location):
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.end_headers()
+
     def send_html(self, status, html):
         data = html.encode("utf-8")
         self.send_response(status)
@@ -387,5 +458,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    threading.Thread(target=retry_worker, daemon=True).start()
     print(f"Starting payment SaaS on {HOST}:{PORT}, db={DB_NAME}", flush=True)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

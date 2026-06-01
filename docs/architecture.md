@@ -107,3 +107,11 @@ Matching v0.2 mencari invoice `pending` dengan merchant yang sama dan amount yan
 - Callback attempts disimpan di tabel `callback_attempts`.
 - Callback retry endpoint tersedia.
 - Reverse proxy config disiapkan untuk Nginx + Certbot.
+
+## SaaS v0.5
+
+- Dashboard login memakai token dan cookie session `pm_session`.
+- Dashboard dapat membuat invoice.
+- Admin dashboard dapat membuat merchant.
+- Merchant dapat mengubah callback URL dan callback secret.
+- Worker retry callback berjalan di background setiap 60 detik.

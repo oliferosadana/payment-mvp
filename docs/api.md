@@ -247,3 +247,28 @@ Retry callback attempt yang gagal.
   "attempt_id": 1
 }
 ```
+
+## SaaS Endpoints v0.5
+
+### Dashboard login/session
+
+```text
+GET  /dashboard/login
+POST /dashboard/login
+POST /dashboard/logout
+```
+
+Dashboard API dapat memakai cookie session setelah login, tidak harus mengirim bearer token dari browser.
+
+### POST /api/merchants/callback
+
+Edit callback URL merchant aktif. Admin dapat mengirim `merchant_id`; merchant token otomatis memakai merchant miliknya.
+
+```json
+{
+  "callback_url": "https://merchant.example.com/payment-callback",
+  "callback_secret": "secret"
+}
+```
+
+Callback retry worker berjalan otomatis setiap 60 detik dan mencoba ulang callback attempts yang statusnya `failed`.
