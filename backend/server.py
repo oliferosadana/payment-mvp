@@ -122,6 +122,56 @@ def list_merchants():
     return psql_json("SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (SELECT id, name, slug, status, created_at FROM merchants ORDER BY id DESC LIMIT 100) t;") or []
 
 
+def list_tokens(ctx):
+    require_type(ctx, {"admin"})
+    return psql_json("SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (SELECT t.id, t.merchant_id, m.name AS merchant_name, t.token_type, t.name, t.token, t.status, t.last_used_at, t.created_at FROM api_tokens t JOIN merchants m ON m.id=t.merchant_id ORDER BY t.id DESC LIMIT 200) t;") or []
+
+
+def regenerate_token(ctx, payload):
+    require_type(ctx, {"admin"})
+    token_id = payload.get("token_id")
+    if not isinstance(token_id, int):
+        raise ValueError("token_id is required integer")
+    token = create_token()
+    return psql_json(f"UPDATE api_tokens SET token={sql_literal(token)}, status='active' WHERE id={token_id} RETURNING row_to_json(api_tokens.*);")
+
+
+def set_token_status(ctx, payload):
+    require_type(ctx, {"admin"})
+    token_id = payload.get("token_id")
+    status = payload.get("status")
+    if not isinstance(token_id, int) or status not in {"active", "disabled"}:
+        raise ValueError("token_id and status active/disabled are required")
+    return psql_json(f"UPDATE api_tokens SET status={sql_literal(status)} WHERE id={token_id} RETURNING row_to_json(api_tokens.*);")
+
+
+def cancel_invoice(ctx, payload):
+    require_type(ctx, {"admin", "merchant"})
+    invoice_id = payload.get("invoice_id")
+    if not isinstance(invoice_id, int):
+        raise ValueError("invoice_id is required integer")
+    scope = "TRUE" if ctx["token_type"] == "admin" else f"merchant_id={ctx['merchant_id']}"
+    return psql_json(f"UPDATE invoices SET status='cancelled', updated_at=now() WHERE id={invoice_id} AND {scope} AND status='pending' RETURNING row_to_json(invoices.*);")
+
+
+def update_device(ctx, payload):
+    require_type(ctx, {"admin", "merchant"})
+    device_id = payload.get("device_id")
+    package_filter = payload.get("package_filter")
+    status = payload.get("status") or "active"
+    if not isinstance(device_id, int) or status not in {"active", "disabled"}:
+        raise ValueError("device_id and status active/disabled are required")
+    scope = "TRUE" if ctx["token_type"] == "admin" else f"merchant_id={ctx['merchant_id']}"
+    return psql_json(f"UPDATE devices SET package_filter={sql_literal(package_filter)}, status={sql_literal(status)}, updated_at=now() WHERE id={device_id} AND {scope} RETURNING row_to_json(devices.*);")
+
+
+def defang_tokens(rows):
+    for row in rows:
+        token = row.get("token") or ""
+        row["token_preview"] = token[:8] + "..." + token[-6:] if len(token) > 16 else token
+    return rows
+
+
 def ensure_device(ctx, payload):
     device_name = payload.get("device_name") or ctx.get("name") or "Android Listener"
     device = psql_json(f"SELECT row_to_json(t) FROM (SELECT * FROM devices WHERE merchant_id={ctx['merchant_id']} AND name={sql_literal(device_name)} LIMIT 1) t;")
@@ -167,7 +217,7 @@ def get_invoice_by_external_id(ctx, external_id):
 def list_devices(ctx, limit):
     require_type(ctx, {"admin", "merchant"})
     where = "TRUE" if ctx["token_type"] == "admin" else f"merchant_id={ctx['merchant_id']}"
-    return psql_json(f"SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (SELECT * FROM devices WHERE {where} ORDER BY id DESC LIMIT {limit}) t;") or []
+    return psql_json(f"SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (SELECT *, CASE WHEN last_seen_at > now() - interval '5 minutes' THEN 'online' ELSE 'offline' END AS online_status FROM devices WHERE {where} ORDER BY id DESC LIMIT {limit}) t;") or []
 
 
 def manual_match_event(ctx, payload):
@@ -326,9 +376,26 @@ def store_event(ctx, payload, client_ip):
 
 
 def dashboard_html(ctx):
-    admin_tools = "" if ctx["token_type"] != "admin" else "<div class='card'><h2>Create Merchant</h2><input id='mname' placeholder='Merchant name'> <input id='mslug' placeholder='slug'> <button onclick='createMerchant()'>Create Merchant</button><pre id='merchantResult'></pre><div id='merchants'></div></div>"
-    return f"""<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>Payment SaaS</title><style>body{{font-family:Arial,sans-serif;background:#f4f7fb;margin:0;padding:24px;color:#111827}}.card{{background:white;border-radius:18px;padding:20px;margin:0 auto 18px;max-width:1120px;box-shadow:0 10px 30px #d7dee8}}input,button{{padding:10px;border-radius:10px;border:1px solid #d7dee8;margin:4px}}button{{background:#2563eb;color:white;cursor:pointer}}table{{width:100%;border-collapse:collapse;font-size:14px}}td,th{{border-bottom:1px solid #e5e7eb;padding:8px;text-align:left}}.paid,.matched,.success{{color:#15803d}}.pending,.needs_review{{color:#b45309}}.failed,.unmatched{{color:#b91c1c}}</style></head><body><div class='card'><h1>Payment SaaS Dashboard</h1><p>Role: <b>{ctx['token_type']}</b> Merchant: <b>{ctx.get('merchant_id')}</b></p><button onclick='logout()'>Logout</button></div><div class='card'><h2>Create Invoice</h2><input id='external_id' placeholder='External ID'> <input id='amount' type='number' placeholder='Amount'> <input id='customer_name' placeholder='Customer name'> <button onclick='createInvoice()'>Create Invoice</button><pre id='invoiceResult'></pre></div><div class='card'><h2>Callback Setting</h2><input id='callback_url' placeholder='Callback URL'> <input id='callback_secret' placeholder='Callback secret'> <button onclick='saveCallback()'>Save Callback</button><pre id='callbackResult'></pre></div>{admin_tools}<div class='card'><h2>Stats</h2><pre id='stats'>-</pre></div><div class='card'><h2>Invoices</h2><div id='invoices'></div></div><div class='card'><h2>Payment Events</h2><div id='events'></div></div><div class='card'><h2>Devices</h2><div id='devices'></div></div><div class='card'><h2>Callbacks</h2><div id='callbacks'></div></div><script>
-function h(){{return {{'Content-Type':'application/json'}}}}async function api(p,o={{}}){{let r=await fetch(p,{{...o,headers:h()}});if(r.status===401) location='/dashboard/login';return await r.json()}}function table(rows){{if(!rows||!rows.length)return '<p>No data</p>';let cols=Object.keys(rows[0]);return '<table><tr>'+cols.map(c=>'<th>'+c+'</th>').join('')+'</tr>'+rows.map(r=>'<tr>'+cols.map(c=>'<td class="'+r[c]+'">'+String(JSON.stringify(r[c])).slice(0,120)+'</td>').join('')+'</tr>').join('')+'</table>'}}async function createInvoice(){{let body={{external_id:external_id.value,amount:+amount.value,customer_name:customer_name.value}};invoiceResult.textContent=JSON.stringify(await api('/api/invoices',{{method:'POST',body:JSON.stringify(body)}}),null,2);load()}}async function createMerchant(){{let body={{name:mname.value,slug:mslug.value}};merchantResult.textContent=JSON.stringify(await api('/api/merchants',{{method:'POST',body:JSON.stringify(body)}}),null,2);load()}}async function saveCallback(){{callbackResult.textContent=JSON.stringify(await api('/api/merchants/callback',{{method:'POST',body:JSON.stringify({{callback_url:callback_url.value,callback_secret:callback_secret.value}})}}),null,2)}}async function manual(eventId){{let invoiceId=prompt('Invoice ID untuk match manual?');if(!invoiceId)return;alert(JSON.stringify(await api('/api/payment-events/manual-match',{{method:'POST',body:JSON.stringify({{event_id:+eventId,invoice_id:+invoiceId}})}})));load()}}async function retry(id){{alert(JSON.stringify(await api('/api/callback-attempts/retry',{{method:'POST',body:JSON.stringify({{attempt_id:+id}})}})));load()}}async function logout(){{await fetch('/dashboard/logout',{{method:'POST'}});location='/dashboard/login'}}async function load(){{document.getElementById('stats').textContent=JSON.stringify(await api('/api/stats'),null,2);let inv=await api('/api/invoices?limit=20');invoices.innerHTML=table(inv);let ev=await api('/api/payment-events?limit=20');events.innerHTML=table(ev.map(e=>({{...e,action:e.status==='needs_review'?'<button onclick="manual('+e.id+')">match</button>':''}})));devices.innerHTML=table(await api('/api/devices?limit=20'));callbacks.innerHTML=table((await api('/api/callback-attempts?limit=20')).map(c=>({{...c,action:c.status==='failed'?'<button onclick="retry('+c.id+')">retry</button>':''}})));try{{merchants.innerHTML=table(await api('/api/merchants'))}}catch(e){{}}}}load();</script></body></html>"""
+    role = ctx["token_type"]
+    merchant_id = ctx.get("merchant_id")
+    admin_tools = "" if role != "admin" else "<div class='card'><h2>Create Merchant</h2><input id='mname' placeholder='Merchant name'> <input id='mslug' placeholder='slug'> <button onclick='createMerchant()'>Create Merchant</button><pre id='merchantResult'></pre><h2>Merchants</h2><div id='merchants'></div><h2>API Tokens</h2><div id='tokens'></div></div>"
+    html = """<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>Payment SaaS</title><style>body{font-family:Arial,sans-serif;background:#f4f7fb;margin:0;padding:24px;color:#111827}.card{background:white;border-radius:18px;padding:20px;margin:0 auto 18px;max-width:1120px;box-shadow:0 10px 30px #d7dee8}input,button{padding:10px;border-radius:10px;border:1px solid #d7dee8;margin:4px}button{background:#2563eb;color:white;cursor:pointer}table{width:100%;border-collapse:collapse;font-size:14px}td,th{border-bottom:1px solid #e5e7eb;padding:8px;text-align:left}.paid,.matched,.success{color:#15803d}.pending,.needs_review{color:#b45309}.failed,.unmatched{color:#b91c1c}</style></head><body><div class='card'><h1>Payment SaaS Dashboard</h1><p>Role: <b>ROLE</b> Merchant: <b>MERCHANT</b></p><button onclick='logout()'>Logout</button></div><div class='card'><h2>Create Invoice</h2><input id='external_id' placeholder='External ID'> <input id='amount' type='number' placeholder='Amount'> <input id='customer_name' placeholder='Customer name'> <button onclick='createInvoice()'>Create Invoice</button><pre id='invoiceResult'></pre></div><div class='card'><h2>Callback Setting</h2><input id='callback_url' placeholder='Callback URL'> <input id='callback_secret' placeholder='Callback secret'> <button onclick='saveCallback()'>Save Callback</button><pre id='callbackResult'></pre></div>ADMIN_TOOLS<div class='card'><h2>Stats</h2><pre id='stats'>-</pre></div><div class='card'><h2>Invoices</h2><div id='invoices'></div></div><div class='card'><h2>Payment Events</h2><div id='events'></div></div><div class='card'><h2>Devices</h2><div id='devices'></div></div><div class='card'><h2>Callbacks</h2><div id='callbacks'></div></div><script>
+function h(){return {'Content-Type':'application/json'}}
+async function api(p,o={}){let r=await fetch(p,{...o,headers:h()});if(r.status===401) location='/dashboard/login';return await r.json()}
+function table(rows){if(!rows||!rows.length)return '<p>No data</p>';let cols=Object.keys(rows[0]);return '<table><tr>'+cols.map(c=>'<th>'+c+'</th>').join('')+'</tr>'+rows.map(r=>'<tr>'+cols.map(c=>'<td class="'+r[c]+'">'+String(JSON.stringify(r[c])).slice(0,120)+'</td>').join('')+'</tr>').join('')+'</table>'}
+async function createInvoice(){let body={external_id:external_id.value,amount:+amount.value,customer_name:customer_name.value};invoiceResult.textContent=JSON.stringify(await api('/api/invoices',{method:'POST',body:JSON.stringify(body)}),null,2);load()}
+async function createMerchant(){let body={name:mname.value,slug:mslug.value};merchantResult.textContent=JSON.stringify(await api('/api/merchants',{method:'POST',body:JSON.stringify(body)}),null,2);load()}
+async function saveCallback(){callbackResult.textContent=JSON.stringify(await api('/api/merchants/callback',{method:'POST',body:JSON.stringify({callback_url:callback_url.value,callback_secret:callback_secret.value})}),null,2)}
+async function manual(eventId){let invoiceId=prompt('Invoice ID untuk match manual?');if(!invoiceId)return;alert(JSON.stringify(await api('/api/payment-events/manual-match',{method:'POST',body:JSON.stringify({event_id:+eventId,invoice_id:+invoiceId})})));load()}
+async function retry(id){alert(JSON.stringify(await api('/api/callback-attempts/retry',{method:'POST',body:JSON.stringify({attempt_id:+id})})));load()}
+async function cancelInv(id){if(confirm('Cancel invoice '+id+'?')){alert(JSON.stringify(await api('/api/invoices/cancel',{method:'POST',body:JSON.stringify({invoice_id:+id})})));load()}}
+async function regenToken(id){if(confirm('Regenerate token '+id+'?')){alert(JSON.stringify(await api('/api/tokens/regenerate',{method:'POST',body:JSON.stringify({token_id:+id})})));load()}}
+async function tokenStatus(id,status){alert(JSON.stringify(await api('/api/tokens/status',{method:'POST',body:JSON.stringify({token_id:+id,status})})));load()}
+async function updateDevice(id){let pf=prompt('Package filter?');if(pf===null)return;alert(JSON.stringify(await api('/api/devices/update',{method:'POST',body:JSON.stringify({device_id:+id,package_filter:pf,status:'active'})})));load()}
+async function logout(){await fetch('/dashboard/logout',{method:'POST'});location='/dashboard/login'}
+async function load(){document.getElementById('stats').textContent=JSON.stringify(await api('/api/stats'),null,2);let inv=await api('/api/invoices?limit=20');invoices.innerHTML=table(inv.map(i=>({...i,action:i.status==='pending'?'<button onclick="cancelInv('+i.id+')">cancel</button>':''})));let ev=await api('/api/payment-events?limit=20');events.innerHTML=table(ev.map(e=>({...e,action:e.status==='needs_review'?'<button onclick="manual('+e.id+')">match</button>':''})));devices.innerHTML=table((await api('/api/devices?limit=20')).map(d=>({...d,action:'<button onclick="updateDevice('+d.id+')">edit</button>'})));callbacks.innerHTML=table((await api('/api/callback-attempts?limit=20')).map(c=>({...c,action:c.status==='failed'?'<button onclick="retry('+c.id+')">retry</button>':''})));try{merchants.innerHTML=table(await api('/api/merchants'));tokens.innerHTML=table((await api('/api/tokens')).map(t=>({...t,action:'<button onclick="regenToken('+t.id+')">regen</button> <button onclick="tokenStatus('+t.id+',\'disabled\')">disable</button> <button onclick="tokenStatus('+t.id+',\'active\')">enable</button>'})))}catch(e){}}
+load();</script></body></html>"""
+    return html.replace("ROLE", role).replace("MERCHANT", str(merchant_id)).replace("ADMIN_TOOLS", admin_tools)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -337,7 +404,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/health":
-            self.send_json(200, {"ok": True, "service": "payment-saas", "version": "0.3"})
+            self.send_json(200, {"ok": True, "service": "payment-saas", "version": "0.4"})
             return
         if parsed.path == "/dashboard/login":
             self.send_html(200, login_page())
@@ -389,6 +456,8 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/merchants":
             require_type(ctx, {"admin"})
             self.send_json(200, list_merchants())
+        elif parsed.path == "/api/tokens":
+            self.send_json(200, defang_tokens(list_tokens(ctx)))
         else:
             self.send_json(404, {"ok": False, "error": "not_found"})
 
@@ -406,6 +475,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"ok": True, "callback": retry_callback(ctx, self.read_json())})
         elif parsed.path == "/api/merchants/callback":
             self.send_json(200, {"ok": True, "merchant": update_merchant_callback(ctx, self.read_json())})
+        elif parsed.path == "/api/tokens/regenerate":
+            self.send_json(200, {"ok": True, "token": regenerate_token(ctx, self.read_json())})
+        elif parsed.path == "/api/tokens/status":
+            self.send_json(200, {"ok": True, "token": set_token_status(ctx, self.read_json())})
+        elif parsed.path == "/api/invoices/cancel":
+            self.send_json(200, {"ok": True, "invoice": cancel_invoice(ctx, self.read_json())})
+        elif parsed.path == "/api/devices/update":
+            self.send_json(200, {"ok": True, "device": update_device(ctx, self.read_json())})
         else:
             self.send_json(404, {"ok": False, "error": "not_found"})
 

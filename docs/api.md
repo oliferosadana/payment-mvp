@@ -272,3 +272,41 @@ Edit callback URL merchant aktif. Admin dapat mengirim `merchant_id`; merchant t
 ```
 
 Callback retry worker berjalan otomatis setiap 60 detik dan mencoba ulang callback attempts yang statusnya `failed`.
+
+## First Merchant Operations v0.6
+
+### GET /api/tokens
+
+Admin-only endpoint untuk melihat token merchant/device beserta preview token.
+
+### POST /api/tokens/regenerate
+
+Admin-only endpoint untuk regenerate token.
+
+```json
+{"token_id": 1}
+```
+
+### POST /api/tokens/status
+
+Admin-only endpoint untuk enable/disable token.
+
+```json
+{"token_id": 1, "status": "disabled"}
+```
+
+### POST /api/invoices/cancel
+
+Cancel invoice pending.
+
+```json
+{"invoice_id": 1}
+```
+
+### POST /api/devices/update
+
+Update device package filter/status.
+
+```json
+{"device_id": 1, "package_filter": "com.gojek.resto", "status": "active"}
+```

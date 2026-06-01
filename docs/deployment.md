@@ -99,3 +99,19 @@ ln -s /etc/nginx/sites-available/payment-saas.conf /etc/nginx/sites-enabled/
 nginx -t && systemctl reload nginx
 certbot --nginx -d payment.example.com
 ```
+
+## First Merchant Hardening
+
+Checklist operasional tersedia di:
+
+```text
+deploy/security-checklist.md
+```
+
+Minimal sebelum merchant pertama:
+
+- Gunakan HTTPS/domain.
+- Jangan expose port `8099` publik jika Nginx sudah aktif.
+- Rotate admin token.
+- Backup database harian.
+- Simpan merchant token dan device token dengan aman.
