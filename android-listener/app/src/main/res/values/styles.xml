@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">@color/page_bg</item>
+        <item name="android:navigationBarColor">@color/page_bg</item>
+        <item name="android:colorAccent">@color/primary_blue</item>
+    </style>
+    <style name="FormLabel">
+        <item name="android:layout_width">match_parent</item><item name="android:layout_height">wrap_content</item><item name="android:layout_marginBottom">7dp</item><item name="android:textColor">@color/text_main</item><item name="android:textSize">14sp</item><item name="android:textStyle">bold</item>
+    </style>
+    <style name="FormInput">
+        <item name="android:layout_width">match_parent</item><item name="android:layout_height">wrap_content</item><item name="android:background">@drawable/bg_input</item><item name="android:textColor">@color/text_main</item><item name="android:textColorHint">#9CA3AF</item><item name="android:textSize">14sp</item><item name="android:paddingStart">14dp</item><item name="android:paddingEnd">14dp</item><item name="android:paddingTop">12dp</item><item name="android:paddingBottom">12dp</item>
+    </style>
+</resources>

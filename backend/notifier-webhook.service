@@ -1,0 +1,16 @@
+[Unit]
+Description=Notifier Listener Webhook Receiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/notifier-webhook
+ExecStart=/usr/bin/python3 /opt/notifier-webhook/server.py
+WorkingDirectory=/opt/notifier-webhook
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

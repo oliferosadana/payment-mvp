@@ -1,0 +1,82 @@
+# Arsitektur
+
+## Tujuan MVP
+
+MVP ini membuktikan flow dasar payment detection:
+
+1. Android membaca notifikasi dari aplikasi target.
+2. Android mengirim data notifikasi ke backend.
+3. Backend menyimpan event ke PostgreSQL.
+4. Backend mem-parse nominal dan ID transaksi.
+5. Backend mencocokkan event dengan invoice pending.
+6. Invoice berubah menjadi `paid` jika cocok.
+
+## Komponen
+
+### Android Listener
+
+Lokasi: `android-listener/`
+
+Fitur:
+
+- `NotificationListenerService`
+- filter package berdasarkan input user
+- webhook URL
+- API key/token
+- test webhook
+- kirim payload JSON ke backend
+
+Payload utama:
+
+```json
+{
+  "package": "com.gojek.resto",
+  "title": "Pembayaran QRIS diterima!",
+  "text": "Rp1 berhasil diterima. ID transaksi: tKT82AID",
+  "sub_text": "",
+  "posted_at": "2026-06-01T09:08:00.109Z"
+}
+```
+
+### Backend Payment MVP
+
+Lokasi: `backend/`
+
+Fitur:
+
+- HTTP server Python standard library
+- token auth via `Authorization: Bearer <token>`
+- endpoint invoice
+- endpoint webhook
+- parser notifikasi QRIS/Gojek
+- matching invoice by amount
+- PostgreSQL persistence
+
+### Database
+
+Database: `payment_mvp`
+
+Tabel:
+
+- `invoices`
+- `payment_events`
+
+## Matching Rule MVP
+
+Saat event masuk:
+
+1. Parse nominal dari teks `Rp...`.
+2. Parse transaction reference dari `ID transaksi: ...`.
+3. Jika `transaction_ref` sudah pernah ada, event ditandai `duplicate`.
+4. Jika amount ditemukan, cari invoice `pending` dengan amount sama.
+5. Jika invoice ditemukan, invoice menjadi `paid`, event menjadi `matched`.
+6. Jika tidak ditemukan, event menjadi `unmatched`.
+
+## Batasan MVP
+
+- Matching hanya berdasarkan amount.
+- Belum ada multi-merchant.
+- Belum ada callback ke merchant.
+- Belum ada dashboard web.
+- Belum ada device heartbeat.
+- Notification listener bukan payment API resmi.

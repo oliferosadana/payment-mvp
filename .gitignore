@@ -1,0 +1,18 @@
+# Android / Gradle
+.gradle/
+build/
+**/build/
+local.properties
+*.apk
+*.aab
+
+# Python
+__pycache__/
+*.pyc
+.env
+.venv/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
