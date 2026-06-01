@@ -310,3 +310,34 @@ Update device package filter/status.
 ```json
 {"device_id": 1, "package_filter": "com.gojek.resto", "status": "active"}
 ```
+
+## QRIS Dynamic Generator v0.7
+
+### POST /api/qris/dynamic
+
+Mengubah string QRIS statis menjadi QRIS dinamis dengan nominal tertentu.
+
+Auth: admin token atau merchant token.
+
+```json
+{
+  "qris": "000201010211...6304ABCD",
+  "amount": 15000
+}
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "qris": "000201010212...540515000...6304021D",
+  "amount": 15000
+}
+```
+
+Catatan:
+
+- Field point of initiation method `01` diubah menjadi `12`.
+- Field amount `54` ditambahkan/diganti sesuai nominal invoice.
+- CRC `63` dihitung ulang otomatis.

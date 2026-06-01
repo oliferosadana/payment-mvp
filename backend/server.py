@@ -172,6 +172,75 @@ def defang_tokens(rows):
     return rows
 
 
+
+def qris_crc16_ccitt(data):
+    crc = 0xFFFF
+    for byte in data.encode("ascii"):
+        crc ^= byte << 8
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
+            else:
+                crc = (crc << 1) & 0xFFFF
+    return f"{crc:04X}"
+
+
+def parse_emv_tlv(text):
+    items = []
+    i = 0
+    while i < len(text):
+        if i + 4 > len(text):
+            raise ValueError("invalid QRIS TLV")
+        tag = text[i:i + 2]
+        length_text = text[i + 2:i + 4]
+        if not tag.isdigit() or not length_text.isdigit():
+            raise ValueError("invalid QRIS tag/length")
+        length = int(length_text)
+        start = i + 4
+        end = start + length
+        if end > len(text):
+            raise ValueError("invalid QRIS length")
+        items.append((tag, text[start:end]))
+        i = end
+    return items
+
+
+def format_emv_tlv(items):
+    return "".join(f"{tag}{len(value):02d}{value}" for tag, value in items)
+
+
+def generate_dynamic_qris(ctx, payload):
+    require_type(ctx, {"admin", "merchant"})
+    static_qris = re.sub(r"\s+", "", str(payload.get("qris") or ""))
+    amount = payload.get("amount")
+    if not static_qris or not isinstance(amount, int) or amount <= 0:
+        raise ValueError("qris and positive integer amount are required")
+    without_crc = static_qris
+    if "6304" in static_qris:
+        without_crc = static_qris[:static_qris.rfind("6304")]
+    items = parse_emv_tlv(without_crc)
+    out = []
+    has_poi = False
+    for tag, value in items:
+        if tag == "01":
+            out.append((tag, "12"))
+            has_poi = True
+        elif tag in {"54", "63"}:
+            continue
+        else:
+            out.append((tag, value))
+    if not has_poi:
+        out.insert(1, ("01", "12"))
+    amount_value = str(amount)
+    insert_at = len(out)
+    for idx, (tag, _) in enumerate(out):
+        if tag > "54":
+            insert_at = idx
+            break
+    out.insert(insert_at, ("54", amount_value))
+    body = format_emv_tlv(out) + "6304"
+    return {"qris": body + qris_crc16_ccitt(body), "amount": amount}
+
 def ensure_device(ctx, payload):
     device_name = payload.get("device_name") or ctx.get("name") or "Android Listener"
     device = psql_json(f"SELECT row_to_json(t) FROM (SELECT * FROM devices WHERE merchant_id={ctx['merchant_id']} AND name={sql_literal(device_name)} LIMIT 1) t;")
@@ -386,7 +455,7 @@ def dashboard_html(ctx):
   <div class="split"><div><h3>Merchants</h3><div id="merchants"></div></div><div><h3>API Tokens</h3><div id="tokens"></div></div></div>
 </section>"""
     html = """<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Payment SaaS Dashboard</title><style>
-:root{--ink:#172019;--muted:#68746c;--paper:#fffaf0;--card:#fffdf7;--line:#e6dcc8;--green:#1f7a4d;--red:#b33939;--amber:#a06100;--blue:#225c7a;--shadow:0 18px 50px rgba(57,43,22,.12)}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 8% 0%,#ffe6a3 0,transparent 30%),linear-gradient(135deg,#f5efe1,#e8f0df 55%,#f8e7d4);color:var(--ink);font-family:Georgia,'Times New Roman',serif}.wrap{max-width:1320px;margin:0 auto;padding:28px}.hero{display:flex;justify-content:space-between;gap:18px;align-items:center;margin-bottom:22px}.brand{font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}h1{font-size:42px;line-height:1;margin:8px 0}h2{margin:0;font-size:24px}h3{margin:18px 0 10px}.pill{display:inline-flex;gap:8px;align-items:center;background:#1d2b22;color:#fff;padding:9px 13px;border-radius:999px;font-family:ui-monospace,monospace;font-size:13px}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}.panel{grid-column:span 12;background:rgba(255,253,247,.9);border:1px solid var(--line);border-radius:24px;padding:20px;box-shadow:var(--shadow);backdrop-filter:blur(10px)}.half{grid-column:span 6}.third{grid-column:span 4}.panel-head{display:flex;justify-content:space-between;gap:12px;align-items:start;margin-bottom:14px}.eyebrow{margin:0 0 4px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.14em}.form-grid{display:grid;grid-template-columns:1.3fr .8fr 1fr auto;gap:10px}.compact{grid-template-columns:1fr 1fr auto}.split{display:grid;grid-template-columns:1fr 1.3fr;gap:18px}input{width:100%;border:1px solid var(--line);background:#fff;border-radius:14px;padding:12px 13px;font:16px Georgia,'Times New Roman',serif}button{border:0;border-radius:14px;background:#1d2b22;color:#fff;padding:12px 15px;cursor:pointer;font-weight:700}button.secondary{background:#e9ddc7;color:#1d2b22}.result{white-space:pre-wrap;max-height:180px;overflow:auto;background:#1d2b22;color:#dff4df;border-radius:16px;padding:12px;display:none}.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}.stat{background:#f7eddb;border:1px solid var(--line);border-radius:18px;padding:14px}.stat b{display:block;font-size:30px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:18px;background:#fff}table{width:100%;border-collapse:collapse;font-size:14px;font-family:ui-sans-serif,system-ui,sans-serif}th{position:sticky;top:0;background:#f4ead8;text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#6b5d4a}td,th{padding:10px;border-bottom:1px solid #eee4d1;vertical-align:top}td{max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{font-weight:800}.paid,.matched,.success,.active,.online{color:var(--green)}.pending,.needs_review{color:var(--amber)}.failed,.unmatched,.disabled,.offline,.cancelled{color:var(--red)}.empty{padding:18px;color:var(--muted);background:#fff;border-radius:18px;border:1px dashed var(--line)}.actions{white-space:normal;min-width:170px}.actions button{padding:8px 10px;margin:2px;font-size:12px}.toast{position:fixed;right:22px;bottom:22px;background:#1d2b22;color:#fff;padding:14px 16px;border-radius:16px;box-shadow:var(--shadow);display:none}@media(max-width:900px){.hero,.split{display:block}.half,.third{grid-column:span 12}.form-grid,.compact,.stats{grid-template-columns:1fr}h1{font-size:32px}.wrap{padding:16px}}</style></head><body><div class="wrap"><header class="hero"><div><p class="brand">Payment SaaS</p><h1>Merchant Operations</h1><span class="pill">Role: ROLE | Merchant: MERCHANT</span></div><button class="secondary" onclick="logout()">Logout</button></header><main class="grid"><section class="panel"><div class="panel-head"><div><p class="eyebrow">Overview</p><h2>Realtime Stats</h2></div><button class="secondary" onclick="load()">Refresh</button></div><div id="stats" class="stats"></div></section><section class="panel half"><p class="eyebrow">Invoice</p><h2>Create Invoice</h2><div class="form-grid"><input id="external_id" placeholder="External ID"><input id="amount" type="number" placeholder="Amount"><input id="customer_name" placeholder="Customer name"><button onclick="createInvoice()">Create</button></div><pre id="invoiceResult" class="result"></pre></section><section class="panel half"><p class="eyebrow">Integration</p><h2>Callback Setting</h2><div class="form-grid compact"><input id="callback_url" placeholder="https://merchant.app/callback"><input id="callback_secret" placeholder="Callback secret"><button onclick="saveCallback()">Save</button></div><pre id="callbackResult" class="result"></pre></section>ADMIN_TOOLS<section class="panel"><div class="panel-head"><div><p class="eyebrow">Invoices</p><h2>Recent Invoices</h2></div></div><div id="invoices"></div></section><section class="panel"><p class="eyebrow">Payments</p><h2>Payment Events</h2><div id="events"></div></section><section class="panel half"><p class="eyebrow">Android</p><h2>Devices</h2><div id="devices"></div></section><section class="panel half"><p class="eyebrow">Webhook</p><h2>Callback Attempts</h2><div id="callbacks"></div></section></main></div><div id="toast" class="toast"></div><script>
+:root{--ink:#172019;--muted:#68746c;--paper:#fffaf0;--card:#fffdf7;--line:#e6dcc8;--green:#1f7a4d;--red:#b33939;--amber:#a06100;--blue:#225c7a;--shadow:0 18px 50px rgba(57,43,22,.12)}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 8% 0%,#ffe6a3 0,transparent 30%),linear-gradient(135deg,#f5efe1,#e8f0df 55%,#f8e7d4);color:var(--ink);font-family:Georgia,'Times New Roman',serif}.wrap{max-width:1320px;margin:0 auto;padding:28px}.hero{display:flex;justify-content:space-between;gap:18px;align-items:center;margin-bottom:22px}.brand{font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}h1{font-size:42px;line-height:1;margin:8px 0}h2{margin:0;font-size:24px}h3{margin:18px 0 10px}.pill{display:inline-flex;gap:8px;align-items:center;background:#1d2b22;color:#fff;padding:9px 13px;border-radius:999px;font-family:ui-monospace,monospace;font-size:13px}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}.panel{grid-column:span 12;background:rgba(255,253,247,.9);border:1px solid var(--line);border-radius:24px;padding:20px;box-shadow:var(--shadow);backdrop-filter:blur(10px)}.half{grid-column:span 6}.third{grid-column:span 4}.panel-head{display:flex;justify-content:space-between;gap:12px;align-items:start;margin-bottom:14px}.eyebrow{margin:0 0 4px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.14em}.form-grid{display:grid;grid-template-columns:1.3fr .8fr 1fr auto;gap:10px}.compact{grid-template-columns:1fr 1fr auto}.split{display:grid;grid-template-columns:1fr 1.3fr;gap:18px}input{width:100%;border:1px solid var(--line);background:#fff;border-radius:14px;padding:12px 13px;font:16px Georgia,'Times New Roman',serif}button{border:0;border-radius:14px;background:#1d2b22;color:#fff;padding:12px 15px;cursor:pointer;font-weight:700}button.secondary{background:#e9ddc7;color:#1d2b22}.result{white-space:pre-wrap;max-height:180px;overflow:auto;background:#1d2b22;color:#dff4df;border-radius:16px;padding:12px;display:none}.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}.stat{background:#f7eddb;border:1px solid var(--line);border-radius:18px;padding:14px}.stat b{display:block;font-size:30px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:18px;background:#fff}table{width:100%;border-collapse:collapse;font-size:14px;font-family:ui-sans-serif,system-ui,sans-serif}th{position:sticky;top:0;background:#f4ead8;text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#6b5d4a}td,th{padding:10px;border-bottom:1px solid #eee4d1;vertical-align:top}td{max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{font-weight:800}.paid,.matched,.success,.active,.online{color:var(--green)}.pending,.needs_review{color:var(--amber)}.failed,.unmatched,.disabled,.offline,.cancelled{color:var(--red)}.empty{padding:18px;color:var(--muted);background:#fff;border-radius:18px;border:1px dashed var(--line)}.actions{white-space:normal;min-width:170px}.actions button{padding:8px 10px;margin:2px;font-size:12px}.toast{position:fixed;right:22px;bottom:22px;background:#1d2b22;color:#fff;padding:14px 16px;border-radius:16px;box-shadow:var(--shadow);display:none}@media(max-width:900px){.hero,.split{display:block}.half,.third{grid-column:span 12}.form-grid,.compact,.stats{grid-template-columns:1fr}h1{font-size:32px}.wrap{padding:16px}}</style></head><body><div class="wrap"><header class="hero"><div><p class="brand">Payment SaaS</p><h1>Merchant Operations</h1><span class="pill">Role: ROLE | Merchant: MERCHANT</span></div><button class="secondary" onclick="logout()">Logout</button></header><main class="grid"><section class="panel"><div class="panel-head"><div><p class="eyebrow">Overview</p><h2>Realtime Stats</h2></div><button class="secondary" onclick="load()">Refresh</button></div><div id="stats" class="stats"></div></section><section class="panel half"><p class="eyebrow">Invoice</p><h2>Create Invoice</h2><div class="form-grid"><input id="external_id" placeholder="External ID"><input id="amount" type="number" placeholder="Amount"><input id="customer_name" placeholder="Customer name"><button onclick="createInvoice()">Create</button></div><pre id="invoiceResult" class="result"></pre></section><section class="panel half"><p class="eyebrow">Integration</p><h2>Callback Setting</h2><div class="form-grid compact"><input id="callback_url" placeholder="https://merchant.app/callback"><input id="callback_secret" placeholder="Callback secret"><button onclick="saveCallback()">Save</button></div><pre id="callbackResult" class="result"></pre></section><section class="panel"><p class="eyebrow">QRIS</p><h2>Static to Dynamic QRIS</h2><div class="form-grid"><input id="qris_static" placeholder="Paste string QRIS statis"><input id="qris_amount" type="number" placeholder="Amount"><input id="qris_note" placeholder="Catatan opsional" disabled><button onclick="generateQris()">Generate</button></div><pre id="qrisResult" class="result"></pre></section>ADMIN_TOOLS<section class="panel"><div class="panel-head"><div><p class="eyebrow">Invoices</p><h2>Recent Invoices</h2></div></div><div id="invoices"></div></section><section class="panel"><p class="eyebrow">Payments</p><h2>Payment Events</h2><div id="events"></div></section><section class="panel half"><p class="eyebrow">Android</p><h2>Devices</h2><div id="devices"></div></section><section class="panel half"><p class="eyebrow">Webhook</p><h2>Callback Attempts</h2><div id="callbacks"></div></section></main></div><div id="toast" class="toast"></div><script>
 function h(){return {'Content-Type':'application/json'}}
 function toast(msg){toastEl=document.getElementById('toast');toastEl.textContent=msg;toastEl.style.display='block';setTimeout(()=>toastEl.style.display='none',2600)}
 async function api(p,o={}){let r=await fetch(p,{...o,headers:h()});if(r.status===401) location='/dashboard/login';let d=await r.json();if(!r.ok||d.ok===false) throw new Error(d.detail||d.error||'request failed');return d}
@@ -397,6 +466,7 @@ function showResult(id,data){let el=document.getElementById(id);el.style.display
 async function createInvoice(){try{let body={external_id:external_id.value,amount:+amount.value,customer_name:customer_name.value};showResult('invoiceResult',await api('/api/invoices',{method:'POST',body:JSON.stringify(body)}));toast('Invoice created');load()}catch(e){toast(e.message)}}
 async function createMerchant(){try{let body={name:mname.value,slug:mslug.value};showResult('merchantResult',await api('/api/merchants',{method:'POST',body:JSON.stringify(body)}));toast('Merchant created');load()}catch(e){toast(e.message)}}
 async function saveCallback(){try{showResult('callbackResult',await api('/api/merchants/callback',{method:'POST',body:JSON.stringify({callback_url:callback_url.value,callback_secret:callback_secret.value})}));toast('Callback saved')}catch(e){toast(e.message)}}
+async function generateQris(){try{let d=await api('/api/qris/dynamic',{method:'POST',body:JSON.stringify({qris:qris_static.value,amount:+qris_amount.value})});showResult('qrisResult',d.qris);navigator.clipboard&&navigator.clipboard.writeText(d.qris);toast('Dynamic QRIS generated and copied')}catch(e){toast(e.message)}}
 async function manual(eventId){let invoiceId=prompt('Invoice ID untuk match manual?');if(!invoiceId)return;try{await api('/api/payment-events/manual-match',{method:'POST',body:JSON.stringify({event_id:+eventId,invoice_id:+invoiceId})});toast('Matched');load()}catch(e){toast(e.message)}}
 async function retry(id){try{await api('/api/callback-attempts/retry',{method:'POST',body:JSON.stringify({attempt_id:+id})});toast('Retry sent');load()}catch(e){toast(e.message)}}
 async function cancelInv(id){if(!confirm('Cancel invoice '+id+'?'))return;try{await api('/api/invoices/cancel',{method:'POST',body:JSON.stringify({invoice_id:+id})});toast('Invoice cancelled');load()}catch(e){toast(e.message)}}
@@ -485,6 +555,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"ok": True, "event": manual_match_event(ctx, self.read_json())})
         elif parsed.path == "/api/callback-attempts/retry":
             self.send_json(200, {"ok": True, "callback": retry_callback(ctx, self.read_json())})
+        elif parsed.path == "/api/qris/dynamic":
+            self.send_json(200, {"ok": True, **generate_dynamic_qris(ctx, self.read_json())})
         elif parsed.path == "/api/merchants/callback":
             self.send_json(200, {"ok": True, "merchant": update_merchant_callback(ctx, self.read_json())})
         elif parsed.path == "/api/tokens/regenerate":
