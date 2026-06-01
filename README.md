@@ -9,7 +9,7 @@ Payment MVP adalah eksperimen payment detection berbasis notifikasi Android. Apl
 ```text
 payment-mvp/
   android-listener/   Android Notification Listener app
-  backend/            Python webhook receiver + Payment MVP API
+  backend/            Python webhook receiver + Payment SaaS API
   docs/               Dokumentasi arsitektur, API, deployment, dan testing
 ```
 
@@ -19,8 +19,8 @@ payment-mvp/
 Android Notification Listener
   -> POST /webhook
   -> Backend parse amount + transaction_ref
-  -> Store payment_events
-  -> Match pending invoice by amount
+  -> Store payment_events per merchant/device
+  -> Match pending invoice by merchant + amount
   -> Mark invoice as paid
 ```
 
@@ -32,6 +32,8 @@ Android Notification Listener
 - `GET /api/invoices`
 - `GET /api/payment-events`
 - `GET /api/stats`
+- `POST /api/merchants` admin only
+- `GET /api/merchants` admin only
 
 Semua endpoint selain `/health` memakai header token bearer.
 

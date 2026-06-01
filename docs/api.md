@@ -133,3 +133,55 @@ Response:
   "unmatched_events": 0
 }
 ```
+
+
+## SaaS Endpoints v0.2
+
+### POST /api/merchants
+
+Admin only. Membuat merchant dan menghasilkan merchant token + device token.
+
+Request:
+
+```json
+{
+  "name": "Merchant A",
+  "slug": "merchant-a"
+}
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "merchant": {"id": 2, "name": "Merchant A", "slug": "merchant-a"},
+  "merchant_token": "pm_xxx",
+  "device_token": "pm_yyy"
+}
+```
+
+### GET /api/merchants
+
+Admin only. List merchant.
+
+### Token Roles
+
+- `admin`: akses semua merchant dan membuat merchant.
+- `merchant`: membuat invoice dan melihat invoice/event merchant sendiri.
+- `device`: hanya untuk Android listener mengirim `/webhook`.
+
+### POST /webhook v0.2
+
+Gunakan device token. Optional field `device_name` akan dipakai untuk register/update device otomatis.
+
+```json
+{
+  "device_name": "Device Kasir 1",
+  "package": "com.gojek.resto",
+  "title": "Pembayaran QRIS diterima!",
+  "text": "Rp15.000 berhasil diterima. ID transaksi: ABC123",
+  "sub_text": "",
+  "posted_at": "2026-06-01T09:30:00.000Z"
+}
+```

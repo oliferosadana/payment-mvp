@@ -23,12 +23,12 @@ Status: selesai tahap awal.
 
 ## Phase 3 - Merchant/SaaS Foundation
 
-- tabel `merchants`
-- tabel `api_tokens`
-- tabel `devices`
-- invoice per merchant
-- device per merchant
-- token per merchant/device
+- tabel `merchants` - done
+- tabel `api_tokens` - done
+- tabel `devices` - done
+- invoice per merchant - done
+- device per merchant - done
+- token per merchant/device - done
 - rate limit
 
 ## Phase 4 - Dashboard

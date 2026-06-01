@@ -80,3 +80,22 @@ Saat event masuk:
 - Belum ada dashboard web.
 - Belum ada device heartbeat.
 - Notification listener bukan payment API resmi.
+
+
+## SaaS Foundation v0.2
+
+Backend sekarang sudah multi-tenant secara dasar:
+
+- `merchants` menyimpan tenant/merchant.
+- `api_tokens` menyimpan token `admin`, `merchant`, dan `device`.
+- `devices` menyimpan Android listener device per merchant.
+- `invoices` memiliki `merchant_id`.
+- `payment_events` memiliki `merchant_id` dan `device_id`.
+
+Token usage:
+
+- Admin token: membuat merchant dan melihat semua data.
+- Merchant token: membuat/list invoice dan melihat event milik merchant tersebut.
+- Device token: dipakai Android listener untuk `POST /webhook`.
+
+Matching v0.2 mencari invoice `pending` dengan merchant yang sama dan amount yang sama. Jika ada lebih dari satu kandidat, event menjadi `needs_review`.
