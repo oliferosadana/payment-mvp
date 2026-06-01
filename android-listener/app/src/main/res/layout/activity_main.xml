@@ -7,6 +7,8 @@
             <EditText android:id="@+id/webhookInput" style="@style/FormInput" android:hint="https://example.com/webhook" android:inputType="textUri" android:singleLine="true" />
             <TextView style="@style/FormLabel" android:text="API Key / Token" android:layout_marginTop="16dp" />
             <EditText android:id="@+id/tokenInput" style="@style/FormInput" android:hint="Masukkan token API" android:inputType="textPassword" android:singleLine="true" />
+            <TextView style="@style/FormLabel" android:text="Device Name" android:layout_marginTop="16dp" />
+            <EditText android:id="@+id/deviceNameInput" style="@style/FormInput" android:hint="Kasir 1" android:inputType="text" android:singleLine="true" />
             <TextView style="@style/FormLabel" android:text="Status webhook" android:layout_marginTop="16dp" />
             <LinearLayout android:layout_width="match_parent" android:layout_height="54dp" android:background="@drawable/bg_input" android:gravity="center_vertical" android:orientation="horizontal" android:paddingStart="14dp" android:paddingEnd="8dp">
                 <View android:layout_width="10dp" android:layout_height="10dp" android:background="@drawable/bg_status_dot" />

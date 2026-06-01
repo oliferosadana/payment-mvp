@@ -16,6 +16,7 @@ import java.net.URL
 class MainActivity : Activity() {
     private lateinit var webhookInput: EditText
     private lateinit var tokenInput: EditText
+    private lateinit var deviceNameInput: EditText
     private lateinit var packageFilterInput: EditText
     private lateinit var statusText: TextView
 
@@ -26,11 +27,13 @@ class MainActivity : Activity() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         webhookInput = findViewById(R.id.webhookInput)
         tokenInput = findViewById(R.id.tokenInput)
+        deviceNameInput = findViewById(R.id.deviceNameInput)
         packageFilterInput = findViewById(R.id.packageFilterInput)
         statusText = findViewById(R.id.statusText)
 
         webhookInput.setText(prefs.getString(KEY_WEBHOOK_URL, ""))
         tokenInput.setText(prefs.getString(KEY_API_TOKEN, ""))
+        deviceNameInput.setText(prefs.getString(KEY_DEVICE_NAME, ""))
         packageFilterInput.setText(prefs.getString(KEY_PACKAGE_FILTER, ""))
 
         findViewById<Button>(R.id.saveButton).setOnClickListener {
@@ -52,6 +55,7 @@ class MainActivity : Activity() {
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
             .putString(KEY_WEBHOOK_URL, webhookInput.text.toString().trim())
             .putString(KEY_API_TOKEN, tokenInput.text.toString().trim())
+            .putString(KEY_DEVICE_NAME, deviceNameInput.text.toString().trim())
             .putString(KEY_PACKAGE_FILTER, packageFilterInput.text.toString().trim())
             .apply()
     }
@@ -59,6 +63,7 @@ class MainActivity : Activity() {
     private fun testWebhook() {
         val webhookUrl = webhookInput.text.toString().trim()
         val token = tokenInput.text.toString().trim()
+        val deviceName = deviceNameInput.text.toString().trim()
         if (webhookUrl.isBlank()) {
             statusText.text = "URL kosong"
             return
@@ -77,7 +82,7 @@ class MainActivity : Activity() {
                     connection.setRequestProperty("Authorization", "Bearer $token")
                 }
                 OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use {
-                    it.write("{\"event\":\"test_webhook\",\"source\":\"notifier_listener\"}")
+                    it.write("{\"event\":\"test_webhook\",\"source\":\"notifier_listener\",\"device_name\":\"${deviceName.escapeJson()}\"}")
                 }
                 val code = connection.responseCode
                 connection.disconnect()
@@ -93,3 +98,5 @@ class MainActivity : Activity() {
         }.start()
     }
 }
+
+private fun String.escapeJson(): String = replace("\\", "\\\\").replace("\"", "\\\"")

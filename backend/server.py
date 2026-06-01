@@ -4,6 +4,7 @@ import os
 import re
 import secrets
 import subprocess
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -137,6 +138,19 @@ def list_invoices(ctx, limit):
     return psql_json(f"SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (SELECT * FROM invoices WHERE {where} ORDER BY id DESC LIMIT {limit}) t;") or []
 
 
+def get_invoice_by_external_id(ctx, external_id):
+    where = f"external_id={sql_literal(external_id)}"
+    if ctx["token_type"] != "admin":
+        where += f" AND merchant_id={ctx['merchant_id']}"
+    return psql_json(f"SELECT row_to_json(t) FROM (SELECT * FROM invoices WHERE {where} LIMIT 1) t;")
+
+
+def list_devices(ctx, limit):
+    require_type(ctx, {"admin", "merchant"})
+    where = "TRUE" if ctx["token_type"] == "admin" else f"merchant_id={ctx['merchant_id']}"
+    return psql_json(f"SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (SELECT * FROM devices WHERE {where} ORDER BY id DESC LIMIT {limit}) t;") or []
+
+
 def list_events(ctx, limit):
     where = "TRUE" if ctx["token_type"] == "admin" else f"merchant_id={ctx['merchant_id']}"
     return psql_json(f"SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (SELECT * FROM payment_events WHERE {where} ORDER BY id DESC LIMIT {limit}) t;") or []
@@ -180,6 +194,32 @@ def match_invoice(merchant_id, amount):
     return "matched", invoice_id, "single_pending_invoice_amount_match"
 
 
+def merchant_for_callback(merchant_id):
+    return psql_json(f"SELECT row_to_json(t) FROM (SELECT id, name, slug, callback_url, callback_secret FROM merchants WHERE id={merchant_id} LIMIT 1) t;")
+
+
+def invoice_by_id(invoice_id):
+    return psql_json(f"SELECT row_to_json(t) FROM (SELECT * FROM invoices WHERE id={invoice_id} LIMIT 1) t;")
+
+
+def send_callback(merchant_id, invoice_id, event):
+    merchant = merchant_for_callback(merchant_id)
+    if not merchant or not merchant.get("callback_url"):
+        return {"sent": False, "reason": "callback_url_empty"}
+    invoice = invoice_by_id(invoice_id)
+    payload = {"event": "invoice.paid", "merchant_id": merchant_id, "invoice": invoice, "payment_event": event}
+    data = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+    req = urllib.request.Request(merchant["callback_url"], data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    if merchant.get("callback_secret"):
+        req.add_header("X-Callback-Secret", merchant["callback_secret"])
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return {"sent": True, "status": resp.status}
+    except Exception as exc:
+        return {"sent": False, "reason": exc.__class__.__name__}
+
+
 def store_event(ctx, payload, client_ip):
     require_type(ctx, {"device"})
     device = ensure_device(ctx, payload)
@@ -192,11 +232,19 @@ def store_event(ctx, payload, client_ip):
             status, invoice_id, reason = match_invoice(ctx["merchant_id"], amount)
     else:
         status, invoice_id, reason = match_invoice(ctx["merchant_id"], amount)
-    return psql_json(f"""
+    event = psql_json(f"""
         INSERT INTO payment_events (merchant_id, device_id, client_ip, package_name, title, text, sub_text, posted_at, raw_payload, parsed_amount, transaction_ref, status, invoice_id, match_reason)
         VALUES ({ctx['merchant_id']}, {device['id']}, {sql_literal(client_ip)}::inet, {sql_literal(payload.get('package'))}, {sql_literal(payload.get('title'))}, {sql_literal(payload.get('text'))}, {sql_literal(payload.get('sub_text'))}, {sql_literal(payload.get('posted_at'))}::timestamptz, {sql_json(payload)}, {amount if amount else 'NULL'}, {sql_literal(transaction_ref)}, {sql_literal(status)}, {invoice_id if invoice_id else 'NULL'}, {sql_literal(reason)})
         RETURNING row_to_json(payment_events.*);
     """)
+    if status == "matched" and invoice_id:
+        event["callback"] = send_callback(ctx["merchant_id"], invoice_id, event)
+    return event
+
+
+def dashboard_html(ctx):
+    merchant_filter = "" if ctx["token_type"] == "admin" else f"&merchant={ctx['merchant_id']}"
+    return f"""<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>Payment SaaS</title><style>body{{font-family:Arial,sans-serif;background:#f4f7fb;margin:0;padding:24px;color:#111827}}.card{{background:white;border-radius:18px;padding:20px;margin:0 auto 18px;max-width:980px;box-shadow:0 10px 30px #d7dee8}}h1{{margin:0 0 8px}}code{{background:#eef2ff;padding:2px 6px;border-radius:6px}}table{{width:100%;border-collapse:collapse}}td,th{{border-bottom:1px solid #e5e7eb;padding:8px;text-align:left}}.paid{{color:#15803d}}.pending{{color:#b45309}}</style></head><body><div class='card'><h1>Payment SaaS Dashboard</h1><p>Gunakan API untuk data live. Endpoint cepat: <code>/api/stats</code>, <code>/api/invoices</code>, <code>/api/payment-events</code>, <code>/api/devices</code>.</p><p>Role token aktif: <code>{ctx['token_type']}</code>{merchant_filter}</p></div></body></html>"""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -214,12 +262,20 @@ class Handler(BaseHTTPRequestHandler):
         self.with_auth(lambda ctx: self.route_post(ctx, parsed))
 
     def route_get(self, ctx, parsed):
-        if parsed.path == "/api/stats":
+        if parsed.path == "/dashboard":
+            self.send_html(200, dashboard_html(ctx))
+        elif parsed.path == "/api/stats":
             self.send_json(200, stats(ctx))
         elif parsed.path == "/api/invoices":
             self.send_json(200, list_invoices(ctx, self.limit(parsed.query)))
+        elif parsed.path.startswith("/api/invoices/by-external-id/"):
+            external_id = parsed.path.rsplit("/", 1)[-1]
+            invoice = get_invoice_by_external_id(ctx, external_id)
+            self.send_json(200 if invoice else 404, {"ok": bool(invoice), "invoice": invoice})
         elif parsed.path == "/api/payment-events":
             self.send_json(200, list_events(ctx, self.limit(parsed.query)))
+        elif parsed.path == "/api/devices":
+            self.send_json(200, list_devices(ctx, self.limit(parsed.query)))
         elif parsed.path == "/api/merchants":
             require_type(ctx, {"admin"})
             self.send_json(200, list_merchants())
@@ -262,6 +318,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         print(f"{self.address_string()} - {fmt % args}", flush=True)
+
+    def send_html(self, status, html):
+        data = html.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def send_json(self, status, body):
         data = json.dumps(body, ensure_ascii=False, default=str).encode("utf-8")

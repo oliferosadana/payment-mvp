@@ -70,3 +70,17 @@ org.telegram.messenger
 ```
 
 Jika filter kosong, semua notifikasi akan dikirim.
+
+## Device Name
+
+Versi terbaru aplikasi memiliki field `Device Name`.
+
+Contoh:
+
+```text
+Kasir 1
+Outlet A
+Device QRIS Utama
+```
+
+Field ini dikirim ke backend sebagai `device_name`, lalu backend membuat atau memperbarui record pada tabel `devices`.

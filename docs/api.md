@@ -185,3 +185,38 @@ Gunakan device token. Optional field `device_name` akan dipakai untuk register/u
   "posted_at": "2026-06-01T09:30:00.000Z"
 }
 ```
+
+## SaaS Endpoints v0.3
+
+### GET /api/invoices/by-external-id/{external_id}
+
+Mengambil detail invoice berdasarkan external ID. Merchant token hanya bisa melihat invoice miliknya sendiri.
+
+### GET /api/devices
+
+List device Android listener. Merchant token hanya melihat device miliknya sendiri.
+
+### GET /dashboard
+
+Dashboard HTML sederhana untuk cek endpoint dan role token aktif.
+
+### Callback invoice.paid
+
+Jika `merchants.callback_url` diisi, backend akan mengirim POST saat invoice berhasil matched dan berubah menjadi paid.
+
+Payload callback:
+
+```json
+{
+  "event": "invoice.paid",
+  "merchant_id": 2,
+  "invoice": {},
+  "payment_event": {}
+}
+```
+
+Jika `callback_secret` diisi, backend mengirim header:
+
+```http
+X-Callback-Secret: <callback_secret>
+```

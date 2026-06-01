@@ -11,6 +11,7 @@ import java.time.Instant
 const val PREFS_NAME = "notifier_listener"
 const val KEY_WEBHOOK_URL = "webhook_url"
 const val KEY_API_TOKEN = "api_token"
+const val KEY_DEVICE_NAME = "device_name"
 const val KEY_PACKAGE_FILTER = "package_filter"
 
 class NotificationRelayService : NotificationListenerService() {
@@ -18,6 +19,7 @@ class NotificationRelayService : NotificationListenerService() {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val webhookUrl = prefs.getString(KEY_WEBHOOK_URL, "").orEmpty()
         val token = prefs.getString(KEY_API_TOKEN, "").orEmpty()
+        val deviceName = prefs.getString(KEY_DEVICE_NAME, "").orEmpty()
         if (webhookUrl.isBlank()) return
 
         val allowedPackages = prefs.getString(KEY_PACKAGE_FILTER, "")
@@ -31,6 +33,7 @@ class NotificationRelayService : NotificationListenerService() {
 
         val extras = sbn.notification.extras
         val payload = mapOf(
+            "device_name" to deviceName,
             "package" to sbn.packageName,
             "title" to extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty(),
             "text" to extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty(),

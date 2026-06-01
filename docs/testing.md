@@ -67,3 +67,23 @@ paid
 5. Buat invoice dengan amount yang sama.
 6. Trigger notifikasi payment nyata.
 7. Cek `/api/payment-events` dan `/api/invoices`.
+
+## SaaS v0.3 Checks
+
+Cek invoice by external ID:
+
+```bash
+curl -H "Authorization: Bearer TOKEN" http://SERVER_IP:8099/api/invoices/by-external-id/SAAS-INV-001
+```
+
+Cek devices:
+
+```bash
+curl -H "Authorization: Bearer TOKEN" http://SERVER_IP:8099/api/devices
+```
+
+Cek dashboard sederhana:
+
+```bash
+curl -H "Authorization: Bearer TOKEN" http://SERVER_IP:8099/dashboard
+```
